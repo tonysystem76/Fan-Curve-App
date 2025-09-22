@@ -1,13 +1,14 @@
 # Fan Curve Control App
 
-A modern GUI application for controlling CPU fan curves on System76 laptops, built with Rust and egui.
+A modern GUI application for controlling CPU fan curves on System76 systems, built with Rust and egui.
 
 ## Features
 
 - 🎛️ **Interactive Fan Curve Editor** - Create custom fan curves with an intuitive GUI
 - 🌡️ **Real-time Temperature Monitoring** - Monitor CPU temperatures and fan speeds
 - 📊 **Multiple Curve Profiles** - Save and switch between different fan curve configurations
-- 🔧 **System76 Integration** - Designed specifically for System76 laptops
+- 🔧 **System76 Integration** - Native integration with `system76-power` via DBus
+- 🧰 **Manual Override** - Force a fan duty (0–100%) on demand
 - 🧩 **Optional Thelio IO Integration** - Experimental hook to the Thelio IO daemon
 - 🚀 **High Performance** - Built with Rust for optimal performance and reliability
 
@@ -39,8 +40,8 @@ curl -sSL https://raw.githubusercontent.com/tonysystem76/Fan-Curve-App/main/inst
 
 ## Requirements
 
-- **Operating System:** Linux (tested on Ubuntu, Pop!_OS, Arch Linux)
-- **Hardware:** System76 laptop
+- **Operating System:** Linux (tested on Pop!_OS and Ubuntu)
+- **Hardware:** System76 desktop/laptop (Thelio IO supported for CPU fan via `pwm1`)
 - **Dependencies:** Rust 1.75+, build tools, X11 libraries
 
 The installation script will automatically install all required dependencies.
@@ -65,12 +66,40 @@ fan-curve --help
 
 ### GUI Application
 
-1. Launch the application from your applications menu or run `fan-curve --gui`
-2. Select a fan curve from the dropdown menu
-3. Click "Apply" to set the fan curve
-4. Use "Edit" to modify existing curves or create new ones
+1. Launch the application from your applications menu or run `fan-curve --gui`.
+2. Select a fan curve from the dropdown and click "Apply fan curve".
+3. The curve is applied in real-time; duty is set via `system76-power` DBus.
+4. Use "Manual Fan Control" to temporarily override duty with a slider.
+5. Use "Max Fans" to force full speed (PWM 255). Use "Auto Fans" to return control to the curve/daemon.
+
+Notes:
+- 100% duty maps to PWM 255, driving the CPU fan to full speed.
+- Currently the app controls the CPU fan channel (`pwm1`). Additional channels may be added later.
 
 ## Configuration
+### system76-power Integration
+
+This app integrates with a fork of `system76-power` that exposes a `com.system76.PowerDaemon.Fan` DBus interface with `SetDuty(u8)`, `SetAuto()`, and `FullSpeed()` methods. When available, the app uses this interface to set duty persistently. If unavailable, it falls back to direct sysfs writes.
+
+Switch your system to use your fork (recommended) with:
+
+```bash
+sudo /home/system76/Fan-Curve-App/install-system76-power-fork.sh
+```
+
+This will:
+- Build your fork at `/home/system76/system76-power`
+- Install the binary to `/usr/local/bin/system76-power`
+- Add a systemd override so the daemon runs your forked binary
+- Restart the daemon and hold the distro package to prevent overwrite
+
+To revert:
+
+```bash
+sudo rm /etc/systemd/system/com.system76.PowerDaemon.service.d/override.conf
+sudo systemctl daemon-reload
+sudo systemctl restart com.system76.PowerDaemon.service
+```
 ### Thelio IO (Experimental)
 
 Set an environment variable to enable Thelio IO integration. When enabled, the app will attempt to detect the Thelio IO DBus service and, if present, use it as a backend for chassis fan telemetry/control in future updates.
@@ -83,7 +112,7 @@ export FAN_APP_THELIO_IO_SERVICE="com.system76.ThelioIo"
 
 Notes:
 - If the service is not present, the application continues to function normally (no-op backend).
-- Current implementation includes stubs for fan RPM/duty and temperature; concrete wiring can be added once the interface is finalized.
+- Current implementation focuses on CPU fan (`pwm1`); additional channels may be added later.
 
 
 Configuration files are stored in `~/.fan_curve_app/config.json`. You can edit this file directly or use the GUI to modify settings.
@@ -129,8 +158,12 @@ rm ~/.local/share/icons/fan-curve-app.svg
 
 ## Troubleshooting
 
-### Permission Issues
-If you encounter permission issues, make sure you're not running as root and that the installation script can use sudo when needed.
+### DBus Access Denied
+If DBus calls to `com.system76.PowerDaemon.Fan` fail with `AccessDenied`, ensure a polkit policy allows your user to call `SetDuty`, `SetAuto`, and `FullSpeed`, or run the included installer to switch to the fork that includes the fan DBus interface.
+
+### Fans do not reach full speed at 100%
+- Ensure your system is using the forked `system76-power` via the installer script.
+- Some hardware requires a direct raw write of PWM 255; the fork handles this for `pwm1` when duty is 100%.
 
 ### Desktop Entry Not Appearing
 After installation, you may need to log out and back in for the desktop entry to appear in your applications menu.
