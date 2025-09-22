@@ -137,8 +137,8 @@ impl eframe::App for FanCurveApp {
             }
 
             if let Ok(data) = self.fan_monitor.get_current_fan_data_sync() {
-                // Convert duty from ten-thousandths to percentage for display
-                let duty_percentage = data.fan_duty / 100;
+                // Fan duty is already a percentage (0-100)
+                let duty_percentage = data.fan_duty;
                 println!(
                     "🔄 GUI: Updated fan data - Temp: {:.1}°C, Fans: {}, Duty: {}%",
                     data.temperature, 
@@ -626,14 +626,14 @@ impl eframe::App for FanCurveApp {
                                     ui.horizontal(|ui| {
                                         ui.label("⚡ Fan Duty:");
                                         ui.colored_label(
-                                            if data.fan_duty > 8000 {
+                                            if data.fan_duty > 80 {
                                                 egui::Color32::RED
-                                            } else if data.fan_duty > 5000 {
+                                            } else if data.fan_duty > 50 {
                                                 egui::Color32::YELLOW
                                             } else {
                                                 egui::Color32::GREEN
                                             },
-                                            format!("{}%", data.fan_duty / 100),
+                                            format!("{}%", data.fan_duty),
                                         );
                                     });
                                     ui.horizontal(|ui| {
