@@ -117,39 +117,74 @@ impl FanCurve {
     }
 
     /// Calculate fan duty percentage for a given temperature using linear interpolation
-    /// This is a convenience method that maintains backward compatibility
+    /// Returns percentage (0-100) for direct use
     pub fn calculate_duty_for_temperature_celsius(&self, temperature: f32) -> u16 {
-        // Convert Celsius to thousandths of Celsius
-        let temp_thousandths = (temperature * 1000.0) as u32;
-        self.calculate_duty_for_temperature(temp_thousandths)
+        if self.points.is_empty() {
+            return 0;
+        }
+
+        // If temperature is below the lowest point, return the duty of the lowest point
+        if temperature <= self.points[0].temp as f32 {
+            return self.points[0].duty;
+        }
+
+        // If temperature is above the highest point, return the duty of the highest point
+        if temperature >= self.points.last().unwrap().temp as f32 {
+            return self.points.last().unwrap().duty;
+        }
+
+        // Find the two points to interpolate between
+        for i in 0..self.points.len() - 1 {
+            let point1 = &self.points[i];
+            let point2 = &self.points[i + 1];
+
+            if temperature >= point1.temp as f32 && temperature <= point2.temp as f32 {
+                // Linear interpolation between the two points
+                let temp1 = point1.temp as f32;
+                let temp2 = point2.temp as f32;
+                let duty1 = point1.duty as f32;
+                let duty2 = point2.duty as f32;
+
+                // Calculate the interpolation factor
+                let factor = (temperature - temp1) / (temp2 - temp1);
+
+                // Interpolate the duty
+                let interpolated_duty = duty1 + factor * (duty2 - duty1);
+
+                return interpolated_duty.round() as u16;
+            }
+        }
+
+        // Fallback (should not reach here)
+        0
     }
 
     pub fn standard() -> Self {
         let mut curve = Self::new("Standard".to_string());
         curve.add_point(0, 0);
-        curve.add_point(30, 2000);  // 20% = 2000/10000
-        curve.add_point(40, 3000);  // 30% = 3000/10000
-        curve.add_point(50, 4000);  // 40% = 4000/10000
-        curve.add_point(60, 5000);  // 50% = 5000/10000
-        curve.add_point(70, 6000);  // 60% = 6000/10000
-        curve.add_point(80, 7000);  // 70% = 7000/10000
-        curve.add_point(90, 8000);  // 80% = 8000/10000
-        curve.add_point(100, 10000); // 100% = 10000/10000
+        curve.add_point(30, 20);   // 20%
+        curve.add_point(40, 30);   // 30%
+        curve.add_point(50, 40);   // 40%
+        curve.add_point(60, 50);   // 50%
+        curve.add_point(70, 60);   // 60%
+        curve.add_point(80, 70);   // 70%
+        curve.add_point(90, 80);   // 80%
+        curve.add_point(100, 100); // 100%
         curve
     }
 
     pub fn threadripper2() -> Self {
         let mut curve = Self::new("Threadripper 2".to_string());
         curve.add_point(0, 0);
-        curve.add_point(25, 1000);  // 10% = 1000/10000
-        curve.add_point(35, 2000);  // 20% = 2000/10000
-        curve.add_point(45, 3000);  // 30% = 3000/10000
-        curve.add_point(55, 4000);  // 40% = 4000/10000
-        curve.add_point(65, 5000);  // 50% = 5000/10000
-        curve.add_point(75, 6000);  // 60% = 6000/10000
-        curve.add_point(85, 7000);  // 70% = 7000/10000
-        curve.add_point(95, 8000);  // 80% = 8000/10000
-        curve.add_point(100, 10000); // 100% = 10000/10000
+        curve.add_point(25, 10);   // 10%
+        curve.add_point(35, 20);   // 20%
+        curve.add_point(45, 30);   // 30%
+        curve.add_point(55, 40);   // 40%
+        curve.add_point(65, 50);   // 50%
+        curve.add_point(75, 60);   // 60%
+        curve.add_point(85, 70);   // 70%
+        curve.add_point(95, 80);   // 80%
+        curve.add_point(100, 100); // 100%
         curve
     }
 

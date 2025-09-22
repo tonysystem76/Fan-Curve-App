@@ -21,6 +21,9 @@ pub struct FanCurveApp {
     edit_point_index: Option<usize>,
     edit_point_temp: String,
     edit_point_duty: String,
+    // Manual duty override
+    manual_mode: bool,
+    manual_duty: u8,
 }
 
 impl FanCurveApp {
@@ -65,6 +68,8 @@ impl FanCurveApp {
             edit_point_temp: String::new(),
             edit_point_duty: String::new(),
             last_applied_curve_index: None,
+            manual_mode: false,
+            manual_duty: 50,
         }
     }
 
@@ -147,6 +152,28 @@ impl eframe::App for FanCurveApp {
                 );
                 self.current_fan_data = Some(data);
                 self.last_fan_data_update = std::time::Instant::now();
+
+                // Apply the fan curve to hardware (DBus mapping duty->PWM handled in monitor)
+                if !self.manual_mode {
+                    if let Some(ref current) = self.current_fan_data {
+                        self.fan_monitor.apply_fan_curve_sync(current.temperature);
+                    }
+                } else {
+                    // Manual mode: map slider to PWM and push via DBus
+                    let pwm = ((self.manual_duty as u32 * 255) / 100) as u8;
+                    let _ = std::process::Command::new("busctl")
+                        .args([
+                            "--system",
+                            "call",
+                            "com.system76.PowerDaemon",
+                            "/com/system76/PowerDaemon/Fan",
+                            "com.system76.PowerDaemon.Fan",
+                            "SetDuty",
+                            "y",
+                            &pwm.to_string(),
+                        ])
+                        .status();
+                }
             }
         }
 
@@ -184,6 +211,30 @@ impl eframe::App for FanCurveApp {
             }
 
             ui.separator();
+
+            // Manual control
+            ui.collapsing("Manual Fan Control", |ui| {
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut self.manual_mode, "Enable manual duty");
+                    if self.manual_mode {
+                        ui.add(egui::Slider::new(&mut self.manual_duty, 0..=100).text("Duty %"));
+                        ui.label(format!("PWM {}", ((self.manual_duty as u32 * 255) / 100)));
+                        if ui.button("Auto").clicked() {
+                            let _ = std::process::Command::new("busctl")
+                                .args([
+                                    "--system",
+                                    "call",
+                                    "com.system76.PowerDaemon",
+                                    "/com/system76/PowerDaemon/Fan",
+                                    "com.system76.PowerDaemon.Fan",
+                                    "SetAuto",
+                                ])
+                                .status();
+                            self.manual_mode = false;
+                        }
+                    }
+                });
+            });
 
             // Current fan profile display
             let current_profile = self.fan_curves[self.current_curve_index].name();
@@ -253,6 +304,28 @@ impl eframe::App for FanCurveApp {
                 self.new_point_duty = "50".to_string();
             }
 
+            // Quick controls: Max / Auto via system76-power
+            ui.horizontal(|ui| {
+                if ui.button("Max Fans").clicked() {
+                    let rt = tokio::runtime::Runtime::new();
+                    if let Ok(rt) = rt {
+                        let _ = rt.block_on(self.fan_monitor.set_max_fans_via_power());
+                        self.set_status("Max Fans requested via system76-power".to_string());
+                    } else {
+                        self.set_status("Failed to create runtime for Max Fans".to_string());
+                    }
+                }
+                if ui.button("Auto Fans").clicked() {
+                    let rt = tokio::runtime::Runtime::new();
+                    if let Ok(rt) = rt {
+                        let _ = rt.block_on(self.fan_monitor.set_auto_fans_via_power());
+                        self.set_status("Auto Fans requested via system76-power".to_string());
+                    } else {
+                        self.set_status("Failed to create runtime for Auto Fans".to_string());
+                    }
+                }
+            });
+
             // Save as new profile button
             if ui.button("Save as New Profile").clicked() {
                 self.show_save_dialog = true;
@@ -260,6 +333,17 @@ impl eframe::App for FanCurveApp {
 
             // Apply button
             if ui.button("Apply Fan Curve").clicked() {
+                // Ensure the monitor is using the currently selected curve
+                self.fan_monitor
+                    .set_fan_curve(self.fan_curves[self.current_curve_index].clone());
+                self.last_applied_curve_index = Some(self.current_curve_index);
+                // Disable manual mode so auto curve drives fans
+                self.manual_mode = false;
+                // Immediately apply at current temperature
+                if let Some(ref data) = self.current_fan_data {
+                    self.fan_monitor.apply_fan_curve_sync(data.temperature);
+                }
+                // Persist
                 match self.save_config() {
                     Ok(_) => self.set_status("Fan curve applied and saved!".to_string()),
                     Err(e) => self.set_status(format!("Failed to save: {}", e)),

@@ -19,6 +19,45 @@ impl System76PowerClient {
         Ok(Self { connection })
     }
 
+    /// Set fan duty via system76-power Fan DBus interface (proposed)
+    /// Path: /com/system76/PowerDaemon/Fan
+    /// Interface: com.system76.PowerDaemon.Fan
+    pub async fn set_fan_duty_via_power(&self, duty_pwm: u8) -> Result<()> {
+        let proxy = zbus::Proxy::new(
+            &self.connection,
+            "com.system76.PowerDaemon",
+            "/com/system76/PowerDaemon/Fan",
+            "com.system76.PowerDaemon.Fan",
+        )
+        .await
+        .map_err(crate::errors::FanCurveError::DBus)?;
+
+        // If method exists, call SetDuty(y)
+        if let Err(e) = proxy.call_method("SetDuty", &(duty_pwm)).await {
+            return Err(crate::errors::FanCurveError::DBus(e));
+        }
+        info!("Set fan duty via system76-power Fan DBus: {}", duty_pwm);
+        Ok(())
+    }
+
+    /// Set automatic fan control via system76-power Fan DBus interface
+    pub async fn set_fan_auto_via_power(&self) -> Result<()> {
+        let proxy = zbus::Proxy::new(
+            &self.connection,
+            "com.system76.PowerDaemon",
+            "/com/system76/PowerDaemon/Fan",
+            "com.system76.PowerDaemon.Fan",
+        )
+        .await
+        .map_err(crate::errors::FanCurveError::DBus)?;
+
+        if let Err(e) = proxy.call_method("SetAuto", &()).await {
+            return Err(crate::errors::FanCurveError::DBus(e));
+        }
+        info!("Enabled automatic fan control via system76-power Fan DBus");
+        Ok(())
+    }
+
     /// Check if System76 Power service is available
     pub async fn is_available(&self) -> bool {
         // Check if the service is available by trying to get a proxy

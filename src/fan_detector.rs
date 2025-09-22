@@ -345,6 +345,12 @@ impl FanDetector {
                     return Err(crate::errors::FanCurveError::Io(e));
                 } else {
                     info!("   ✅ Fan {} PWM successfully set to {} at {}", fan.fan_number, duty, pwm_path.display());
+                    
+                    // Add delay to allow fan to spin up to target speed
+                    if duty > 0 {
+                        info!("   ⏳ Waiting for fan {} to reach target speed...", fan.fan_number);
+                        std::thread::sleep(std::time::Duration::from_millis(2000));
+                    }
                 }
             }
         } else {

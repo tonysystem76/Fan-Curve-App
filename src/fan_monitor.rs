@@ -4,7 +4,7 @@ use crate::fan_detector::FanDetector;
 use crate::system76_power_client::System76PowerClient;
 use chrono::{DateTime, Local};
 use futures_util::stream::StreamExt;
-use log::{error, info, warn};
+use log::{error, info, warn, debug};
 use rand;
 use std::fs;
 use std::time::Instant;
@@ -44,6 +44,32 @@ impl FanMonitor {
             system76_power_client: None,
             dbus_connection: None,
         }
+    }
+
+    /// Set fans to maximum via system76-power DBus (override)
+    pub async fn set_max_fans_via_power(&mut self) -> Result<()> {
+        if self.system76_power_client.is_none() {
+            let _ = self.initialize_system76_power().await;
+        }
+        if let Some(ref client) = self.system76_power_client {
+            client.set_fan_duty_via_power(255).await?;
+        } else {
+            warn!("System76 Power client unavailable for Max Fans");
+        }
+        Ok(())
+    }
+
+    /// Return fans to automatic via system76-power DBus
+    pub async fn set_auto_fans_via_power(&mut self) -> Result<()> {
+        if self.system76_power_client.is_none() {
+            let _ = self.initialize_system76_power().await;
+        }
+        if let Some(ref client) = self.system76_power_client {
+            client.set_fan_auto_via_power().await?;
+        } else {
+            warn!("System76 Power client unavailable for Auto Fans");
+        }
+        Ok(())
     }
 
     /// Initialize the fan monitor (detects CPU temperature sensor and fans)
@@ -282,8 +308,9 @@ impl FanMonitor {
                 .join(" | ")
         };
         
-        // Convert duty from ten-thousandths to percentage for display
-        let duty_percentage = data.fan_duty / 100;
+        // Convert fan_duty to percentage for display.
+        // If already 0..100, use as-is; if ten-thousandths, divide by 100.
+        let duty_percentage = if data.fan_duty > 100 { data.fan_duty / 100 } else { data.fan_duty };
         
         println!("🌡️  Temperature: {:.1}°C | 🌀 Fans: {} | ⚡ Fan Duty: {}% | 💻 CPU: {:.1}% | ⏰ {}",
             data.temperature,
@@ -372,71 +399,84 @@ impl FanMonitor {
 
 
     /// Calculate fan duty based on the current fan curve
-    /// Returns duty in ten-thousandths (0-10000) to match system76-power standard
+    /// Returns duty as percentage (0-100)
     fn calculate_fan_duty_from_curve(&self, temperature: f32) -> u16 {
         if let Some(ref curve) = self.current_fan_curve {
-            // Convert Celsius to thousandths of Celsius
-            let temp_thousandths = (temperature * 1000.0) as u32;
-            curve.calculate_duty_for_temperature(temp_thousandths)
+            // Use the Celsius-based calculation for simplicity
+            curve.calculate_duty_for_temperature_celsius(temperature)
         } else {
             // Fallback to simple simulation if no curve is set
             let duty_percent = ((temperature - 30.0).max(0.0) * 2.0) as u16;
-            let duty_percent = duty_percent.min(100);
-            // Convert percentage to ten-thousandths
-            (duty_percent * 100) as u16
+            duty_percent.min(100)
         }
     }
 
-    /// Calculate PWM value from duty (0-10000) to PWM (0-255)
-    /// Matches system76-power conversion: (duty * 255) / 10000
-    fn duty_to_pwm(&self, duty: u16) -> u8 {
-        ((u32::from(duty) * 255) / 10000) as u8
+    /// Calculate PWM value from duty percentage (0-100) to PWM (0-255)
+    /// Formula: PWM = (duty_percent * 255) / 100
+    fn duty_to_pwm(&self, duty_percent: u16) -> u8 {
+        ((u32::from(duty_percent) * 255) / 100) as u8
     }
 
     /// Apply fan curve to hardware via System76 Power DBus interface and direct PWM control
-    pub async fn apply_fan_curve(&self, temperature: f32) -> Result<()> {
+    pub async fn apply_fan_curve(&mut self, temperature: f32) -> Result<()> {
         if !self.fan_detector.is_initialized() {
             warn!("Fan detector not initialized, cannot apply fan curve");
             return Ok(());
         }
 
-        let duty = self.calculate_fan_duty_from_curve(temperature);
-        let duty_percentage = duty / 100; // Convert ten-thousandths to percentage for display
+        let duty_percentage = self.calculate_fan_duty_from_curve(temperature);
         
         info!("🌡️  Temperature: {:.1}°C", temperature);
-        info!("📊 Calculated duty: {} ({}%)", duty, duty_percentage);
+        info!("📊 Calculated duty: {}%", duty_percentage);
         
         // Special logging for 100% duty test
-        if duty == 10000 {
+        if duty_percentage == 100 {
             info!("🔥 TEST MODE: 100% DUTY DETECTED - This should set PWM to 255!");
         }
         
-        info!("🔄 Applying fan curve: {:.1}°C -> {}% duty ({} ten-thousandths)", 
-              temperature, duty_percentage, duty);
+        info!("🔄 Applying fan curve: {:.1}°C -> {}% duty", 
+              temperature, duty_percentage);
         
-        // Try to use System76 Power client if available (for power profiles)
-        if let Some(ref client) = self.system76_power_client {
-            if let Err(e) = client.apply_fan_curve(temperature, duty_percentage).await {
-                warn!("Failed to apply fan curve via System76 Power: {}", e);
-            }
-        } else {
-            warn!("System76 Power client not initialized");
-        }
-        
-        // Convert duty (0-10000) to PWM value (0-255) using system76-power formula
-        let pwm_value = self.duty_to_pwm(duty);
-        info!("⚡ PWM conversion: {} duty -> {} PWM (formula: ({} * 255) / 10000)", 
-              duty, pwm_value, duty);
+        // Convert duty percentage (0-100) to PWM value (0-255)
+        let pwm_value = self.duty_to_pwm(duty_percentage);
+        info!("⚡ PWM conversion: {}% duty -> {} PWM (formula: ({} * 255) / 100)", 
+              duty_percentage, pwm_value, duty_percentage);
         
         // Special logging for PWM 255 test
         if pwm_value == 255 {
             info!("🔥 TEST MODE: PWM 255 DETECTED - This should make fans run at maximum speed!");
         }
         
-        // Apply to all fans using the new set_duty method (matches system76-power approach)
+        // Ensure System76 Power client is available (lazy init)
+        if self.system76_power_client.is_none() {
+            // Ignore init error here and fallback to direct PWM if it fails
+            let _ = self.initialize_system76_power().await;
+        }
+
+        // Map duty to PWM, and drive DBus SetDuty(pwm) for any duty (not just 100%)
+        if let Some(ref client) = self.system76_power_client {
+            match client.set_fan_duty_via_power(pwm_value).await {
+                Ok(()) => {
+                    info!("✅ Set fan duty via system76-power Fan DBus: {}", pwm_value);
+                    return Ok(());
+                }
+                Err(e) => {
+                    warn!("System76 Power Fan DBus not available or failed: {}. Falling back to direct PWM.", e);
+                }
+            }
+        } else {
+            warn!("System76 Power client not initialized; falling back to direct PWM");
+        }
+
+        // Apply to all fans using the set_duty method (direct sysfs)
         match self.fan_detector.set_duty(Some(pwm_value)) {
             Ok(()) => {
                 info!("✅ Successfully applied PWM control to all fans: {} (duty: {}%)", pwm_value, duty_percentage);
+                
+                // Save the current PWM setting for persistence
+                if let Err(e) = self.save_pwm_setting(pwm_value, duty_percentage) {
+                    warn!("Failed to save PWM setting: {}", e);
+                }
                 
                 // Verify the PWM values were actually set
                 if let Err(e) = self.fan_detector.verify_pwm_values() {
@@ -453,6 +493,11 @@ impl FanMonitor {
                     match self.fan_detector.set_fan_pwm(cpu_fan.fan_number, pwm_value) {
                         Ok(()) => {
                             info!("✅ Fallback successful: CPU fan {} PWM set to {}", cpu_fan.fan_number, pwm_value);
+                            
+                            // Save the current PWM setting for persistence
+                            if let Err(e) = self.save_pwm_setting(pwm_value, duty_percentage) {
+                                warn!("Failed to save PWM setting: {}", e);
+                            }
                         }
                         Err(fallback_e) => {
                             error!("❌ Fallback failed: Could not set CPU fan PWM directly: {}", fallback_e);
@@ -465,6 +510,25 @@ impl FanMonitor {
         }
         
         Ok(())
+    }
+
+    /// Synchronous variant: map duty to PWM and call DBus SetDuty via busctl
+    /// Used by GUI loop to avoid nested async runtimes
+    pub fn apply_fan_curve_sync(&mut self, temperature: f32) {
+        let duty_percentage = self.calculate_fan_duty_from_curve(temperature);
+        let pwm_value = self.duty_to_pwm(duty_percentage);
+        let _ = std::process::Command::new("busctl")
+            .args([
+                "--system",
+                "call",
+                "com.system76.PowerDaemon",
+                "/com/system76/PowerDaemon/Fan",
+                "com.system76.PowerDaemon.Fan",
+                "SetDuty",
+                "y",
+                &pwm_value.to_string(),
+            ])
+            .status();
     }
 
     /// Read CPU usage from /proc/stat
@@ -560,6 +624,41 @@ impl FanMonitor {
         
         Ok(())
     }
+
+    /// Save PWM setting for persistence (to survive system76-power overwrites)
+    fn save_pwm_setting(&self, pwm_value: u8, duty_percentage: u16) -> Result<()> {
+        let config_dir = std::path::Path::new("/tmp/fan_curve_app");
+        if !config_dir.exists() {
+            fs::create_dir_all(config_dir)?;
+        }
+        
+        let pwm_file = config_dir.join("current_pwm");
+        let content = format!("{}:{}", pwm_value, duty_percentage);
+        fs::write(&pwm_file, content)?;
+        
+        debug!("💾 Saved PWM setting: {} ({}%) to {}", pwm_value, duty_percentage, pwm_file.display());
+        Ok(())
+    }
+
+    /// Load saved PWM setting
+    fn load_pwm_setting(&self) -> Result<Option<(u8, u16)>> {
+        let pwm_file = std::path::Path::new("/tmp/fan_curve_app/current_pwm");
+        if !pwm_file.exists() {
+            return Ok(None);
+        }
+        
+        let content = fs::read_to_string(pwm_file)?;
+        let parts: Vec<&str> = content.trim().split(':').collect();
+        if parts.len() != 2 {
+            return Ok(None);
+        }
+        
+        let pwm_value = parts[0].parse::<u8>().map_err(|e| crate::errors::FanCurveError::Config(format!("Invalid PWM value: {}", e)))?;
+        let duty_percentage = parts[1].parse::<u16>().map_err(|e| crate::errors::FanCurveError::Config(format!("Invalid duty percentage: {}", e)))?;
+        
+        debug!("📂 Loaded PWM setting: {} ({}%)", pwm_value, duty_percentage);
+        Ok(Some((pwm_value, duty_percentage)))
+    }
 }
 
 impl Default for FanMonitor {
@@ -597,9 +696,9 @@ pub async fn test_fan_curve(
     
     // Create a test fan curve that forces 100% duty at all temperatures
     let mut test_curve = crate::fan::FanCurve::new("Test 100%".to_string());
-    test_curve.add_point(0, 10000);   // 100% at 0°C
-    test_curve.add_point(50, 10000);  // 100% at 50°C  
-    test_curve.add_point(100, 10000); // 100% at 100°C
+    test_curve.add_point(0, 100);   // 100% at 0°C
+    test_curve.add_point(50, 100);  // 100% at 50°C  
+    test_curve.add_point(100, 100); // 100% at 100°C
     monitor.set_fan_curve(test_curve);
     
     info!("🧪 Test mode: Using 100% duty curve for all temperatures");
