@@ -263,7 +263,8 @@ impl FanMonitor {
         // Apply fan curve to hardware if controller is available
         if self.fan_controller.is_initialized() {
             if let Err(e) = self.fan_controller.set_fan_duty(fan_duty as u8) {
-                warn!("Failed to set fan duty: {}", e);
+                error!("❌ CRITICAL: Failed to set fan duty: {}", e);
+                error!("   This indicates a permission problem. Run with sudo or fix PWM permissions.");
             }
         }
 
@@ -287,7 +288,8 @@ impl FanMonitor {
         // Apply fan curve to hardware if controller is available
         if self.fan_controller.is_initialized() {
             if let Err(e) = self.fan_controller.set_fan_duty(fan_duty as u8) {
-                warn!("Failed to set fan duty: {}", e);
+                error!("❌ CRITICAL: Failed to set fan duty: {}", e);
+                error!("   This indicates a permission problem. Run with sudo or fix PWM permissions.");
             }
         }
 
@@ -506,28 +508,9 @@ impl FanMonitor {
                 }
             }
             Err(e) => {
-                error!("❌ Failed to set fan PWM via set_duty: {}", e);
-                
-                // Fallback to individual CPU fan control
-                if let Some(cpu_fan) = self.fan_detector.get_cpu_fan() {
-                    info!("🔄 Fallback: Applying direct PWM control to CPU fan {} -> PWM {}", 
-                          cpu_fan.fan_number, pwm_value);
-                    match self.fan_detector.set_fan_pwm(cpu_fan.fan_number, pwm_value) {
-                        Ok(()) => {
-                            info!("✅ Fallback successful: CPU fan {} PWM set to {}", cpu_fan.fan_number, pwm_value);
-                            
-                            // Save the current PWM setting for persistence
-                            if let Err(e) = self.save_pwm_setting(pwm_value, duty_percentage) {
-                                warn!("Failed to save PWM setting: {}", e);
-                            }
-                        }
-                        Err(fallback_e) => {
-                            error!("❌ Fallback failed: Could not set CPU fan PWM directly: {}", fallback_e);
-                        }
-                    }
-                } else {
-                    error!("❌ No CPU fan found for direct PWM control fallback");
-                }
+                error!("❌ CRITICAL: Failed to set fan PWM via set_duty: {}", e);
+                error!("   This indicates a permission problem. Run with sudo or fix PWM permissions.");
+                return Err(e);
             }
         }
         

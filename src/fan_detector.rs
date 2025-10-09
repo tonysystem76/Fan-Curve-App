@@ -1,5 +1,5 @@
 use crate::errors::Result;
-use log::{error, info, warn};
+use log::{info, warn};
 use std::fs;
 use std::path::Path;
 
@@ -284,7 +284,7 @@ impl FanDetector {
             fs::write(&pwm_path, duty.to_string()).map_err(|e| {
                 if e.kind() == std::io::ErrorKind::PermissionDenied {
                     crate::errors::FanCurveError::PermissionDenied(format!(
-                        "Failed to set PWM duty for fan {} at {}: {}",
+                        "Failed to set PWM duty for fan {} at {}: {} - Run with sudo or fix permissions",
                         fan_number,
                         pwm_path.display(),
                         e
@@ -339,18 +339,25 @@ impl FanDetector {
                 
                 // Set PWM duty
                 info!("   ⚙️  Setting PWM duty to {} for fan {}...", duty, fan.fan_number);
-                if let Err(e) = fs::write(&pwm_path, &duty_str) {
-                    error!("❌ Failed to set PWM duty for fan {} at {}: {}", 
-                           fan.fan_number, pwm_path.display(), e);
-                    return Err(crate::errors::FanCurveError::Io(e));
-                } else {
-                    info!("   ✅ Fan {} PWM successfully set to {} at {}", fan.fan_number, duty, pwm_path.display());
-                    
-                    // Add delay to allow fan to spin up to target speed
-                    if duty > 0 {
-                        info!("   ⏳ Waiting for fan {} to reach target speed...", fan.fan_number);
-                        std::thread::sleep(std::time::Duration::from_millis(2000));
+                fs::write(&pwm_path, &duty_str).map_err(|e| {
+                    if e.kind() == std::io::ErrorKind::PermissionDenied {
+                        crate::errors::FanCurveError::PermissionDenied(format!(
+                            "Failed to set PWM duty for fan {} at {}: {} - Run with sudo or fix permissions",
+                            fan.fan_number,
+                            pwm_path.display(),
+                            e
+                        ))
+                    } else {
+                        crate::errors::FanCurveError::Io(e)
                     }
+                })?;
+                
+                info!("   ✅ Fan {} PWM successfully set to {} at {}", fan.fan_number, duty, pwm_path.display());
+                
+                // Add delay to allow fan to spin up to target speed
+                if duty > 0 {
+                    info!("   ⏳ Waiting for fan {} to reach target speed...", fan.fan_number);
+                    std::thread::sleep(std::time::Duration::from_millis(2000));
                 }
             }
         } else {
@@ -396,6 +403,7 @@ impl FanDetector {
         
         Ok(())
     }
+
 }
 
 impl Default for FanDetector {
