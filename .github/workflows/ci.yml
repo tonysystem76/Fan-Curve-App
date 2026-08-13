@@ -32,6 +32,13 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-cargo-
     
+    - name: Forbid cursoragent in commit messages
+      run: |
+        if git log --format=%B | grep -F 'cursoragent@cursor.com'; then
+          echo "HARD RULE: cursoragent must not appear in commit messages"
+          exit 1
+        fi
+
     - name: Check formatting
       run: cargo fmt -- --check
     

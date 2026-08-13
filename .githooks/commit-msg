@@ -1,0 +1,6 @@
+#!/bin/sh
+# HARD RULE: never persist cursoragent in commit messages.
+msgfile=$1
+tmp=$(mktemp)
+grep -v -F 'cursoragent@cursor.com' "$msgfile" | grep -v -E '^Co-authored-by:[[:space:]]*Cursor[[:space:]]*<' > "$tmp"
+mv "$tmp" "$msgfile"

@@ -1,0 +1,25 @@
+---
+description: HARD RULE — never include cursoragent in commits
+alwaysApply: true
+---
+
+# HARD RULE: no cursoragent in git history
+
+This is a hard, always-on rule. It applies to every commit, amend, rebase, tag, and PR.
+
+**Forbidden:** `cursoragent` in any git authorship metadata. In particular never:
+
+- `Co-authored-by: Cursor <cursoragent@cursor.com>`
+- `cursoragent@cursor.com` anywhere in the commit message
+- `--trailer` / `--author` values that mention cursoragent
+
+**Allowed:** human authors such as `killingerr`. Do not rewrite or remove those.
+
+**Required procedure for every git commit:**
+
+1. Do not pass any Cursor/cursoragent trailer.
+2. After `git commit` or `git commit --amend`, run `git log -1 --format=%B` before pushing.
+3. If `cursoragent` is present, strip it (amend or rewrite) and verify again. Do not push until it is gone.
+4. If a tool injected the trailer, strip it before finishing. Never leave it in published history.
+
+Do not finish a commit/push turn while `HEAD` still contains `cursoragent`.
