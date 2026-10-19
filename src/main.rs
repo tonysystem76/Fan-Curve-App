@@ -3,57 +3,37 @@
 use clap::Parser;
 use eframe::egui;
 use fan_curve_app::{
-    args::Args, client::FanCurveClient, daemon::FanCurveDaemon, fan_curve_gui::FanCurveApp, logging,
+    args::{Args, Commands},
+    client,
+    daemon::FanCurveDaemon,
+    fan_curve_gui::FanCurveApp,
+    logging, notifier,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
-    logging::setup(args.verbose).map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+    logging::setup(args.verbose)?;
 
     // GUI uses zbus's blocking API, which cannot run inside a Tokio runtime.
     // Keep this path fully synchronous.
     if args.gui {
-        return run_gui().map_err(|e| Box::new(e) as Box<dyn std::error::Error>);
+        return Ok(run_gui()?);
     }
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    rt.block_on(async_main(args))
+    rt.block_on(async {
+        match args.command {
+            Some(Commands::Daemon) => FanCurveDaemon::new()?.run().await?,
+            Some(Commands::Notify) => notifier::run().await?,
+            Some(Commands::FanCurve { command }) => client::run(command).await?,
+            None => return Err("No command specified".into()),
+        }
+        Ok(())
+    })
 }
 
-async fn async_main(args: Args) -> Result<(), Box<dyn std::error::Error>> {
-    // Handle daemon mode
-    if let Some(fan_curve_app::args::Commands::Daemon) = args.command {
-        let daemon =
-            FanCurveDaemon::new().map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
-        daemon
-            .run()
-            .await
-            .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
-        return Ok(());
-    }
-
-    if let Some(fan_curve_app::args::Commands::Notify) = args.command {
-        fan_curve_app::notifier::run()
-            .await
-            .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
-        return Ok(());
-    }
-
-    // Handle client mode
-    let client = FanCurveClient::new()
-        .await
-        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
-    client
-        .handle_args(args)
-        .await
-        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
-
-    Ok(())
-}
-
-/// Run the GUI application
 fn run_gui() -> Result<(), eframe::Error> {
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()

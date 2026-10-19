@@ -107,13 +107,7 @@ impl FanCurveApp {
             load_initial_curves(daemon.as_ref());
 
         let mut fan_monitor = FanMonitor::new();
-        if let Err(e) = fan_monitor.initialize() {
-            eprintln!(
-                "Warning: Failed to initialize CPU temperature detection: {}",
-                e
-            );
-            eprintln!("Falling back to simulation mode");
-        }
+        fan_monitor.initialize();
 
         if daemon.is_some() {
             println!("Connected to fan curve daemon; daemon controls the fans");
@@ -153,47 +147,16 @@ impl FanCurveApp {
 
     fn save_config(&self) -> Result<()> {
         let config_path = FanCurveConfig::get_config_path();
-
-        // Ensure the directory exists
-        if let Some(parent) = config_path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                eprintln!("Failed to create config directory: {}", e);
-                e
-            })?;
-        }
-
         // The GUI doesn't edit channel assignments yet; keep any in the file.
         let channels = FanCurveConfig::load_from_file(&config_path)
             .map(|c| c.channels)
             .unwrap_or_default();
-        let config = FanCurveConfig {
+        FanCurveConfig {
             curves: self.fan_curves.clone(),
             default_curve_index: self.default_curve_index,
             channels,
-        };
-
-        // Create a temporary file first, then rename for atomic operation
-        let temp_path = config_path.with_extension("tmp");
-
-        // Save to temporary file
-        config.save_to_file(&temp_path).map_err(|e| {
-            eprintln!("Failed to save config to temp file: {}", e);
-            e
-        })?;
-
-        // Atomically rename temp file to final location
-        std::fs::rename(&temp_path, &config_path).map_err(|e| {
-            eprintln!("Failed to rename temp config file: {}", e);
-            // Try to clean up temp file
-            let _ = std::fs::remove_file(&temp_path);
-            e
-        })?;
-
-        println!(
-            "Configuration saved successfully to: {}",
-            config_path.display()
-        );
-        Ok(())
+        }
+        .save_to_file(&config_path)
     }
 
     fn set_status(&mut self, message: String) {
@@ -248,6 +211,17 @@ impl FanCurveApp {
             Err(e) => self.set_status(format!("Saved locally, but daemon push failed: {}", e)),
         }
     }
+}
+
+/// Parse a point dialog's temperature (°C) and duty (%) fields.
+fn parse_point(temp: &str, duty: &str) -> std::result::Result<(i16, u16), String> {
+    let (Ok(temp), Ok(duty)) = (temp.trim().parse::<i16>(), duty.trim().parse::<u16>()) else {
+        return Err("Invalid input: Please enter valid numbers".to_string());
+    };
+    if !(0..=100).contains(&temp) || duty > 100 {
+        return Err("Invalid values: Temperature must be 0-100°C, Duty must be 0-100%".to_string());
+    }
+    Ok((temp, duty))
 }
 
 /// Colour for a temperature reading in the Live Fan Data section.
@@ -340,8 +314,6 @@ impl eframe::App for FanCurveApp {
                     .read_usage(),
             );
         }
-
-        // No test mode state to manage
 
         // Request periodic repaint for smooth updates
         ctx.request_repaint_after(std::time::Duration::from_millis(500));
@@ -617,12 +589,10 @@ impl eframe::App for FanCurveApp {
                 }
             }
 
-            // (Test mode removed)
-
             // Add point dialog
             if self.show_add_point_dialog {
                 let mut should_close = false;
-                let mut should_add = false;
+                let mut added = None;
                 let mut error_message = None;
 
                 egui::Window::new("Add Fan Curve Point")
@@ -646,19 +616,12 @@ impl eframe::App for FanCurveApp {
 
                         ui.horizontal(|ui| {
                             if ui.button("Add Point").clicked() {
-                                // Validate inputs
-                                if let (Ok(temp), Ok(duty)) = (
-                                    self.new_point_temp.parse::<i16>(),
-                                    self.new_point_duty.parse::<u16>()
-                                ) {
-                                    if (0..=100).contains(&temp) && duty <= 100 {
-                                        should_add = true;
+                                match parse_point(&self.new_point_temp, &self.new_point_duty) {
+                                    Ok(point) => {
+                                        added = Some(point);
                                         should_close = true;
-                                    } else {
-                                        error_message = Some("Invalid values: Temperature must be 0-100°C, Duty must be 0-100%".to_string());
                                     }
-                                } else {
-                                    error_message = Some("Invalid input: Please enter valid numbers".to_string());
+                                    Err(e) => error_message = Some(e),
                                 }
                             }
                             if ui.button("Cancel").clicked() {
@@ -667,25 +630,16 @@ impl eframe::App for FanCurveApp {
                         });
                     });
 
+                if let Some((temp, duty)) = added {
+                    // Dialog input is percent; store as ten-thousandths (0-10000)
+                    self.fan_curves[self.current_curve_index].add_point(temp, duty * 100);
+                    self.set_status(format!("Added point: {}°C -> {}%", temp, duty));
+                    self.auto_save_config();
+                }
                 if should_close {
                     self.show_add_point_dialog = false;
-                    if should_add {
-                        if let (Ok(temp), Ok(duty)) = (
-                            self.new_point_temp.parse::<i16>(),
-                            self.new_point_duty.parse::<u16>()
-                        ) {
-                            // Dialog input is percent; store as ten-thousandths (0-10000)
-                            self.fan_curves[self.current_curve_index].add_point(temp, duty * 100);
-                            self.set_status(format!("Added point: {}°C -> {}%", temp, duty));
-                            // Auto-save after adding point
-                            self.auto_save_config();
-                        }
-                        self.new_point_temp.clear();
-                        self.new_point_duty.clear();
-                    } else {
-                        self.new_point_temp.clear();
-                        self.new_point_duty.clear();
-                    }
+                    self.new_point_temp.clear();
+                    self.new_point_duty.clear();
                 }
 
                 if let Some(error) = error_message {
@@ -696,7 +650,7 @@ impl eframe::App for FanCurveApp {
             // Edit point dialog
             if self.show_edit_point_dialog {
                 let mut should_close = false;
-                let mut should_edit = false;
+                let mut edited = None;
                 let mut error_message = None;
 
                 egui::Window::new("Edit Fan Curve Point")
@@ -720,19 +674,12 @@ impl eframe::App for FanCurveApp {
 
                         ui.horizontal(|ui| {
                             if ui.button("Update Point").clicked() {
-                                // Validate inputs
-                                if let (Ok(temp), Ok(duty)) = (
-                                    self.edit_point_temp.parse::<i16>(),
-                                    self.edit_point_duty.parse::<u16>()
-                                ) {
-                                    if (0..=100).contains(&temp) && duty <= 100 {
-                                        should_edit = true;
+                                match parse_point(&self.edit_point_temp, &self.edit_point_duty) {
+                                    Ok(point) => {
+                                        edited = Some(point);
                                         should_close = true;
-                                    } else {
-                                        error_message = Some("Invalid values: Temperature must be 0-100°C, Duty must be 0-100%".to_string());
                                     }
-                                } else {
-                                    error_message = Some("Invalid input: Please enter valid numbers".to_string());
+                                    Err(e) => error_message = Some(e),
                                 }
                             }
                             if ui.button("Cancel").clicked() {
@@ -741,34 +688,20 @@ impl eframe::App for FanCurveApp {
                         });
                     });
 
+                if let (Some((temp, duty)), Some(index)) = (edited, self.edit_point_index) {
+                    let curve = &mut self.fan_curves[self.current_curve_index];
+                    // Replace the old point; dialog input is percent, stored as ten-thousandths
+                    if curve.remove_point(index).is_some() {
+                        curve.add_point(temp, duty * 100);
+                        self.set_status(format!("Updated point {}: {}°C -> {}%", index + 1, temp, duty));
+                        self.auto_save_config();
+                    }
+                }
                 if should_close {
                     self.show_edit_point_dialog = false;
-                    if should_edit {
-                        if let (Ok(temp), Ok(duty)) = (
-                            self.edit_point_temp.parse::<i16>(),
-                            self.edit_point_duty.parse::<u16>()
-                        ) {
-                            if let Some(index) = self.edit_point_index {
-                                if index < self.fan_curves[self.current_curve_index].points().len() {
-                                    // Remove the old point and add the new one
-                                    // Dialog input is percent; store as ten-thousandths (0-10000)
-                                    if let Some(_old_point) = self.fan_curves[self.current_curve_index].remove_point(index) {
-                                        self.fan_curves[self.current_curve_index].add_point(temp, duty * 100);
-                                        self.set_status(format!("Updated point {}: {}°C -> {}%", index + 1, temp, duty));
-                                        // Auto-save after editing point
-                                        self.auto_save_config();
-                                    }
-                                }
-                            }
-                        }
-                        self.edit_point_temp.clear();
-                        self.edit_point_duty.clear();
-                        self.edit_point_index = None;
-                    } else {
-                        self.edit_point_temp.clear();
-                        self.edit_point_duty.clear();
-                        self.edit_point_index = None;
-                    }
+                    self.edit_point_temp.clear();
+                    self.edit_point_duty.clear();
+                    self.edit_point_index = None;
                 }
 
                 if let Some(error) = error_message {
@@ -921,8 +854,6 @@ impl eframe::App for FanCurveApp {
                                     ui.label(data.timestamp.format("%H:%M:%S").to_string());
                                 });
                             });
-
-                            // (No progress bar; test mode removed)
                         } else {
                             ui.horizontal(|ui| {
                                 ui.spinner();

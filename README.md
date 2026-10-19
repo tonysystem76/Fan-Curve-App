@@ -71,20 +71,6 @@ fan-curve --help
 4. Use "Edit" to modify existing curves or create new ones
 
 ## Configuration
-### Thelio IO (Experimental)
-
-Set an environment variable to enable Thelio IO integration. When enabled, the app will attempt to detect the Thelio IO DBus service and, if present, use it as a backend for chassis fan telemetry/control in future updates.
-
-```bash
-export FAN_APP_ENABLE_THELIO_IO=1
-# Optional: override service name if needed
-export FAN_APP_THELIO_IO_SERVICE="com.system76.ThelioIo"
-```
-
-Notes:
-- If the service is not present, the application continues to function normally (no-op backend).
-- Current implementation includes stubs for fan RPM/duty and temperature; concrete wiring can be added once the interface is finalized.
-
 
 Configuration files are stored in `~/.fan_curve_app/config.json`. You can edit this file directly or use the GUI to modify settings.
 

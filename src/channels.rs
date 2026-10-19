@@ -175,10 +175,6 @@ impl IoBoard {
         None
     }
 
-    pub fn channels(&self) -> &[IoChannel] {
-        &self.channels
-    }
-
     /// Compute and write every channel's duty, or 100% on every channel when
     /// `full_speed` is set. Returns the (channel, duty, pwm) values written.
     pub fn apply(
@@ -389,7 +385,7 @@ impl GpuTemp {
             asleep = true;
             Vec::new()
         } else {
-            match nvidia_temperatures() {
+            match nvidia_query("temperature.gpu") {
                 Ok(temps) => temps,
                 Err(e) => {
                     // Matches system76-power: stop calling nvidia-smi after a failure.
@@ -435,11 +431,6 @@ impl GpuTemp {
             None => GpuReading::Unavailable,
         }
     }
-}
-
-/// Temperatures in °C of every NVIDIA GPU, via nvidia-smi.
-fn nvidia_temperatures() -> std::io::Result<Vec<f32>> {
-    nvidia_query("temperature.gpu")
 }
 
 /// One numeric nvidia-smi query field for every NVIDIA GPU.
